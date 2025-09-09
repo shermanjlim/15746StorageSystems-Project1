@@ -35,6 +35,8 @@ class MyFTL : public FTLBase<PageType> {
     size_t num_op_blocks =
         (num_blocks * op + 100 / 2) / 100;  // rounds to nearest integer
 
+    largest_lba = (num_blocks - num_op_blocks) * block_size - 1;
+
     // place all overprovisioned blocks at the end of the SSD, for now...
     for (size_t block_idx = num_blocks - num_op_blocks; block_idx < num_blocks;
          ++block_idx) {
@@ -63,6 +65,10 @@ class MyFTL : public FTLBase<PageType> {
   std::pair<ExecState, Address> ReadTranslate(
       size_t lba, const ExecCallBack<PageType> &func) {
     (void)func;
+
+    if (!IsValidLba(lba)) {
+      return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
+    }
 
     Address datapage_addr = CalcPhyAddr(lba);
     size_t datapage_idx = GetPageIdx(datapage_addr);
@@ -96,6 +102,10 @@ class MyFTL : public FTLBase<PageType> {
   std::pair<ExecState, Address> WriteTranslate(
       size_t lba, const ExecCallBack<PageType> &func) {
     (void)func;
+
+    if (!IsValidLba(lba)) {
+      return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
+    }
 
     Address datapage_addr = CalcPhyAddr(lba);
     size_t datapage_idx = GetPageIdx(datapage_addr);
@@ -139,6 +149,8 @@ class MyFTL : public FTLBase<PageType> {
   }
 
  private:
+  bool IsValidLba(size_t lba) { return lba <= largest_lba; }
+
   Address CalcPhyAddr(size_t lba) {
     return Address(lba / (package_size * die_size * plane_size * block_size),
                    (lba / (die_size * plane_size * block_size)) % package_size,
@@ -175,6 +187,9 @@ class MyFTL : public FTLBase<PageType> {
   size_t plane_size;
   /* Number of pages in a block_ */
   size_t block_size;
+
+  // gives the largest valid lba
+  size_t largest_lba;
 
   // list of free block indexes
   std::list<size_t> free_log_blocks;

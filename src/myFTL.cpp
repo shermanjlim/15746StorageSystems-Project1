@@ -7,6 +7,9 @@
 
 #include "common.h"
 
+/* Number of pages in a block_ */
+size_t block_size;
+
 // Abstract class for a garbage collector policy
 class GCPolicy {
  public:
@@ -105,6 +108,54 @@ class GreedyPolicy : public GCPolicy {
   std::unordered_map<size_t, size_t> block_livepages_map;
 };
 
+class CostBenefitPolicy : public GCPolicy {
+ public:
+  CostBenefitPolicy() : curr_ts(0), block_ts_map(), block_livepages_map() {}
+
+  size_t SelectBlockToClean() {
+    size_t block_maxratio = std::numeric_limits<size_t>::max();
+    double maxratio = std::numeric_limits<double>::min();
+    for (const auto &it : block_livepages_map) {
+      double ratio = CalcRatio(it.first);
+      if (ratio > maxratio) {
+        block_maxratio = it.first;
+        maxratio = ratio;
+      }
+    }
+    block_ts_map.erase(block_maxratio);
+    block_livepages_map.erase(block_maxratio);
+    return block_maxratio;
+  }
+
+  void LogBlockAllocatedHandler(size_t datablock_idx, size_t livepages) {
+    block_ts_map[datablock_idx] = 0;
+    block_livepages_map[datablock_idx] = livepages;
+  }
+
+  void DataBlockWrittenHandler(size_t datablock_idx, bool is_newly_live) {
+    ++curr_ts;
+    if (block_livepages_map.count(datablock_idx) == 0) {
+      return;
+    }
+    block_ts_map[datablock_idx] = curr_ts;
+    if (is_newly_live) {
+      ++block_livepages_map[datablock_idx];
+    }
+  }
+
+ private:
+  double CalcRatio(size_t block_idx) {
+    double age = curr_ts - block_ts_map[block_idx];
+    double livepages = block_livepages_map[block_idx];
+    double utilization = livepages / (2 * block_size);
+    return (1 - utilization) / (1 + utilization) * age;
+  }
+
+  size_t curr_ts;
+  std::unordered_map<size_t, size_t> block_ts_map;
+  std::unordered_map<size_t, size_t> block_livepages_map;
+};
+
 std::unique_ptr<GCPolicy> SelectGCPolicy(size_t policy_idx) {
   switch (policy_idx) {
     case 0:
@@ -114,6 +165,7 @@ std::unique_ptr<GCPolicy> SelectGCPolicy(size_t policy_idx) {
     case 2:
       return std::unique_ptr<GreedyPolicy>(new GreedyPolicy());
     case 3:
+      return std::unique_ptr<CostBenefitPolicy>(new CostBenefitPolicy());
     default:
       throw std::runtime_error{"invalid GC policy_idx"};
   }
@@ -130,7 +182,6 @@ class MyFTL : public FTLBase<PageType> {
         package_size(conf->GetPackageSize()),
         die_size(conf->GetDieSize()),
         plane_size(conf->GetPlaneSize()),
-        block_size(conf->GetBlockSize()),
         block_erase_count(conf->GetBlockEraseCount()),
         free_log_blocks(),
         data_logblock_map(),
@@ -140,6 +191,8 @@ class MyFTL : public FTLBase<PageType> {
         gc_policy(SelectGCPolicy(conf->GetGCPolicy())) {
     /* Overprovioned blocks as a percentage of total number of blocks */
     size_t op = conf->GetOverprovisioning();
+
+    block_size = conf->GetBlockSize();
 
     printf("SSD Configuration: %zu, %zu, %zu, %zu, %zu\n", ssd_size,
            package_size, die_size, plane_size, block_size);
@@ -399,8 +452,6 @@ class MyFTL : public FTLBase<PageType> {
   size_t die_size;
   /* Number of blocks in a plane_ */
   size_t plane_size;
-  /* Number of pages in a block_ */
-  size_t block_size;
   /* Maximum number a block_ can be erased */
   size_t block_erase_count;
 

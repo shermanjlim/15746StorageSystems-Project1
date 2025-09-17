@@ -122,17 +122,25 @@ class MyFTL : public FTLBase<PageType> {
     size_t datablock_idx = GetBlockIdx(datapage_addr);
     if (data_logblock_map.count(datablock_idx) == 0) {
       if (free_log_blocks.empty()) {
-        return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
+        if (Clean(SelectBlockToClean(), func)) {
+          return WriteTranslate(lba, func);
+        } else {
+          return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
+        }
       }
       // allocate logblock
       data_logblock_map[datablock_idx] = free_log_blocks.front();
       free_log_blocks.pop_front();
+      mapped_datablocks.push_back(datablock_idx);
     }
     size_t logblock_idx = data_logblock_map[datablock_idx];
 
     if (logblock_lbas_map[logblock_idx].size() == block_size) {
-      // logblock is full
-      return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
+      if (Clean(datablock_idx, func)) {
+        return WriteTranslate(lba, func);
+      } else {
+        return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
+      }
     }
 
     logblock_lbas_map[logblock_idx].push_back(lba);
@@ -206,6 +214,12 @@ class MyFTL : public FTLBase<PageType> {
     return true;
   }
 
+  size_t SelectBlockToClean() {
+    size_t datablock_idx = mapped_datablocks.front();
+    mapped_datablocks.pop_front();
+    return datablock_idx;
+  }
+
   bool IsValidLba(size_t lba) { return lba <= largest_lba; }
 
   Address CalcPhyAddr(size_t lba) {
@@ -262,6 +276,8 @@ class MyFTL : public FTLBase<PageType> {
   // mapping of log reservation blocks to LBAs written
   std::unordered_map<size_t, std::vector<size_t>> logblock_lbas_map;
   size_t cleanblock_idx;
+
+  std::list<size_t> mapped_datablocks;
 };
 
 /*

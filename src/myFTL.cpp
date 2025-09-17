@@ -198,8 +198,8 @@ class MyFTL : public FTLBase<PageType> {
 
     printf("SSD Configuration: %zu, %zu, %zu, %zu, %zu\n", ssd_size,
            package_size, die_size, plane_size, block_size);
-    printf("Max Erase Count: %zu, Overprovisioning: %zu%%\n", block_erase_count,
-           op);
+    printf("Max Erase Count: %zu, Overprovisioning: %zu%%, GC: %zu\n",
+           block_erase_count, op, conf->GetGCPolicy());
 
     size_t num_blocks = ssd_size * package_size * die_size * plane_size;
     size_t num_op_blocks =

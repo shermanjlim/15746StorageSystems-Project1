@@ -13,6 +13,10 @@ class GCPolicy {
   virtual size_t SelectBlockToClean() = 0;
   // handler is called when a logblock has been allocated to a datablock
   virtual void LogBlockAllocatedHandler(size_t datablock_idx) = 0;
+  // handler is called when a datablock has been written to
+  virtual void DataBlockWrittenHandler(size_t datablock_idx) {
+    (void)datablock_idx;
+  }
 };
 
 class RoundRobinPolicy : public GCPolicy {
@@ -33,11 +37,42 @@ class RoundRobinPolicy : public GCPolicy {
   std::list<size_t> blocks_queue;
 };
 
+class LRUPolicy : public GCPolicy {
+ public:
+  LRUPolicy() : blocks_lru(), block_node_map() {}
+
+  size_t SelectBlockToClean() {
+    size_t datablock_idx = blocks_lru.front();
+    block_node_map.erase(datablock_idx);
+    blocks_lru.pop_front();
+    return datablock_idx;
+  }
+
+  void LogBlockAllocatedHandler(size_t datablock_idx) {
+    block_node_map.insert(std::make_pair(
+        datablock_idx, blocks_lru.insert(blocks_lru.end(), datablock_idx)));
+  }
+
+  void DataBlockWrittenHandler(size_t datablock_idx) {
+    if (block_node_map.count(datablock_idx) == 0) {
+      return;
+    }
+    blocks_lru.erase(block_node_map[datablock_idx]);
+    block_node_map[datablock_idx] =
+        blocks_lru.insert(blocks_lru.end(), datablock_idx);
+  }
+
+ private:
+  std::list<size_t> blocks_lru;
+  std::unordered_map<size_t, std::list<size_t>::iterator> block_node_map;
+};
+
 std::unique_ptr<GCPolicy> SelectGCPolicy(size_t policy_idx) {
   switch (policy_idx) {
     case 0:
       return std::unique_ptr<RoundRobinPolicy>(new RoundRobinPolicy());
     case 1:
+      return std::unique_ptr<LRUPolicy>(new LRUPolicy());
     case 2:
     case 3:
     default:
@@ -152,15 +187,16 @@ class MyFTL : public FTLBase<PageType> {
 
     Address datapage_addr = CalcPhyAddr(lba);
     size_t datapage_idx = GetPageIdx(datapage_addr);
+    size_t datablock_idx = GetBlockIdx(datapage_addr);
 
     if (!pages_valid[datapage_idx]) {
       // page is empty
       pages_valid[datapage_idx] = true;
+      gc_policy->DataBlockWrittenHandler(datablock_idx);
       return std::make_pair(ExecState::SUCCESS, datapage_addr);
     }
 
     // page is not empty
-    size_t datablock_idx = GetBlockIdx(datapage_addr);
     if (data_logblock_map.count(datablock_idx) == 0) {
       if (free_log_blocks.empty()) {
         if (Clean(gc_policy->SelectBlockToClean(), func)) {
@@ -185,6 +221,7 @@ class MyFTL : public FTLBase<PageType> {
     }
 
     logblock_lbas_map[logblock_idx].push_back(lba);
+    gc_policy->DataBlockWrittenHandler(datablock_idx);
     return std::make_pair(
         ExecState::SUCCESS,
         GetAddrFromBlockPageIdx(logblock_idx,

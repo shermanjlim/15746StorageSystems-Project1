@@ -188,6 +188,8 @@ class MyFTL : public FTLBase<PageType> {
         pages_valid(),
         erase_counts(),
         logblock_lbas_map(),
+        cleanblock_idxs(),
+        curr_cleanblock_idx(0),
         gc_policy(SelectGCPolicy(conf->GetGCPolicy())) {
     /* Overprovioned blocks as a percentage of total number of blocks */
     size_t op = conf->GetOverprovisioning();
@@ -210,9 +212,11 @@ class MyFTL : public FTLBase<PageType> {
          ++block_idx) {
       free_log_blocks.push_back(block_idx);
     }
-    // allocate just one cleaning block for now...
-    cleanblock_idx = free_log_blocks.front();
-    free_log_blocks.pop_front();
+    // allocate half of over-provisioned blocks as cleaning blocks
+    for (size_t i = 0; i < num_op_blocks / 2; ++i) {
+      cleanblock_idxs.push_back(free_log_blocks.front());
+      free_log_blocks.pop_front();
+    }
 
     size_t num_pages = num_blocks * block_size;
     pages_valid.resize(num_pages, false);
@@ -333,6 +337,8 @@ class MyFTL : public FTLBase<PageType> {
  private:
   bool Clean(size_t datablock_idx, const ExecCallBack<PageType> &func) {
     size_t logblock_idx = data_logblock_map[datablock_idx];
+    size_t cleanblock_idx = cleanblock_idxs[curr_cleanblock_idx];
+    curr_cleanblock_idx = (curr_cleanblock_idx + 1) % cleanblock_idxs.size();
 
     if (erase_counts[datablock_idx] >= block_erase_count ||
         erase_counts[logblock_idx] >= block_erase_count ||
@@ -468,7 +474,9 @@ class MyFTL : public FTLBase<PageType> {
   std::vector<size_t> erase_counts;
   // mapping of log reservation blocks to LBAs written
   std::unordered_map<size_t, std::vector<size_t>> logblock_lbas_map;
-  size_t cleanblock_idx;
+
+  std::vector<size_t> cleanblock_idxs;
+  size_t curr_cleanblock_idx;
 
   std::unique_ptr<GCPolicy> gc_policy;
 };

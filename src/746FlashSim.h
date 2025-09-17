@@ -1266,7 +1266,7 @@ class Controller {
 #if (CONFIG_TWOPROC == 1)
     auto ret = ftl_p->ReadTranslate(lba, ExecCallBack<PageType>());
 #else
-    auto ret = ftl_p->ReadTranslate(lba_, FlashSimExecCallBack<PageType>(this));
+    auto ret = ftl_p->ReadTranslate(lba, FlashSimExecCallBack<PageType>(this));
 #endif
 
     /* Make sure nothing is left in page buffer after translation */
@@ -1308,7 +1308,7 @@ class Controller {
     auto ret = ftl_p->WriteTranslate(lba, ExecCallBack<PageType>());
 #else
     auto ret =
-        ftl_p->WriteTranslate(lba_, FlashSimExecCallBack<PageType>(this));
+        ftl_p->WriteTranslate(lba, FlashSimExecCallBack<PageType>(this));
 #endif
     /* Make sure nothing is left in page buffer after translation */
     EnsureStateIsClean();
@@ -1347,7 +1347,7 @@ class Controller {
 #if (CONFIG_TWOPROC == 1)
     auto ret = ftl_p->Trim(lba, ExecCallBack<PageType>());
 #else
-    auto ret = ftl_p->Trim(lba_, FlashSimExecCallBack<PageType>(this));
+    auto ret = ftl_p->Trim(lba, FlashSimExecCallBack<PageType>(this));
 #endif
     /* Make sure nothing is left in page buffer after translation */
     EnsureStateIsClean();

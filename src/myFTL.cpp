@@ -42,6 +42,9 @@ class MyFTL : public FTLBase<PageType> {
          ++block_idx) {
       free_log_blocks.push_back(block_idx);
     }
+    // allocate just one cleaning block for now...
+    cleanblock_idx = free_log_blocks.front();
+    free_log_blocks.pop_front();
 
     size_t num_pages = num_blocks * block_size;
     pages_valid.resize(num_pages, false);
@@ -85,9 +88,8 @@ class MyFTL : public FTLBase<PageType> {
     size_t logblock_idx = data_logblock_map[datablock_idx];
     for (int i = logblock_lbas_map[logblock_idx].size() - 1; i >= 0; --i) {
       if (logblock_lbas_map[logblock_idx][i] == lba) {
-        Address logpage_addr = GetAddrFromBlockIdx(logblock_idx);
-        logpage_addr.page = i;
-        return std::make_pair(ExecState::SUCCESS, logpage_addr);
+        return std::make_pair(ExecState::SUCCESS,
+                              GetAddrFromBlockPageIdx(logblock_idx, i));
       }
     }
 
@@ -134,9 +136,10 @@ class MyFTL : public FTLBase<PageType> {
     }
 
     logblock_lbas_map[logblock_idx].push_back(lba);
-    Address logpage_addr = GetAddrFromBlockIdx(logblock_idx);
-    logpage_addr.page = logblock_lbas_map[logblock_idx].size() - 1;
-    return std::make_pair(ExecState::SUCCESS, logpage_addr);
+    return std::make_pair(
+        ExecState::SUCCESS,
+        GetAddrFromBlockPageIdx(logblock_idx,
+                                logblock_lbas_map[logblock_idx].size() - 1));
   }
 
   /*
@@ -149,6 +152,60 @@ class MyFTL : public FTLBase<PageType> {
   }
 
  private:
+  bool Clean(size_t datablock_idx, const ExecCallBack<PageType> &func) {
+    size_t logblock_idx = data_logblock_map[datablock_idx];
+
+    std::vector<bool> live_copied(block_size, false);
+
+    // start copying live pages from log block
+    auto &logblock_lbas = logblock_lbas_map[logblock_idx];
+    for (int i = logblock_lbas.size() - 1; i >= 0; --i) {
+      size_t lba = logblock_lbas[i];
+      Address datapage_addr = CalcPhyAddr(lba);
+      if (live_copied[datapage_addr.page]) {
+        continue;
+      }
+      // this is a live page, copy it over to the cleaning block
+      func(OpCode::READ, GetAddrFromBlockPageIdx(logblock_idx, i));
+      func(OpCode::WRITE,
+           GetAddrFromBlockPageIdx(cleanblock_idx, datapage_addr.page));
+      live_copied[datapage_addr.page] = true;
+    }
+
+    // copy remaining live pages from data block
+    for (size_t i = 0; i < block_size; ++i) {
+      if (live_copied[i]) {
+        continue;
+      }
+      if (!pages_valid[i]) {
+        continue;
+      }
+      // this is a live page, copy it over to the cleaning block
+      func(OpCode::READ, GetAddrFromBlockPageIdx(datablock_idx, i));
+      func(OpCode::WRITE, GetAddrFromBlockPageIdx(cleanblock_idx, i));
+      live_copied[i] = true;
+    }
+
+    // erase data and log block and reset data structures
+    func(OpCode::ERASE, GetAddrFromBlockIdx(datablock_idx));
+    func(OpCode::ERASE, GetAddrFromBlockIdx(logblock_idx));
+    free_log_blocks.push_back(logblock_idx);
+    data_logblock_map.erase(datablock_idx);
+    logblock_lbas.clear();
+
+    // copy from clean block to data block
+    for (size_t i = 0; i < block_size; ++i) {
+      if (!live_copied[i]) {
+        continue;
+      }
+      func(OpCode::READ, GetAddrFromBlockPageIdx(cleanblock_idx, i));
+      func(OpCode::WRITE, GetAddrFromBlockPageIdx(datablock_idx, i));
+    }
+    func(OpCode::ERASE, GetAddrFromBlockIdx(cleanblock_idx));
+
+    return true;
+  }
+
   bool IsValidLba(size_t lba) { return lba <= largest_lba; }
 
   Address CalcPhyAddr(size_t lba) {
@@ -168,6 +225,11 @@ class MyFTL : public FTLBase<PageType> {
                    (block_idx / (die_size * plane_size)) % package_size,
                    (block_idx / plane_size) % die_size, block_idx % plane_size,
                    0);
+  }
+  Address GetAddrFromBlockPageIdx(size_t block_idx, size_t page_idx) {
+    Address addr = GetAddrFromBlockIdx(block_idx);
+    addr.page = page_idx;
+    return addr;
   }
 
   size_t GetPageIdx(const Address &addr) {
@@ -199,6 +261,7 @@ class MyFTL : public FTLBase<PageType> {
   std::vector<bool> pages_valid;
   // mapping of log reservation blocks to LBAs written
   std::unordered_map<size_t, std::vector<size_t>> logblock_lbas_map;
+  size_t cleanblock_idx;
 };
 
 /*

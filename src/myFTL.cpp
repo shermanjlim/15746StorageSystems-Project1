@@ -1,5 +1,6 @@
 #include "myFTL.h"
 
+#include <limits>
 #include <list>
 #include <memory>
 #include <unordered_map>
@@ -12,10 +13,13 @@ class GCPolicy {
   // returns the corresponding datablock_idx of the logblock to clean
   virtual size_t SelectBlockToClean() = 0;
   // handler is called when a logblock has been allocated to a datablock
-  virtual void LogBlockAllocatedHandler(size_t datablock_idx) = 0;
+  virtual void LogBlockAllocatedHandler(size_t datablock_idx,
+                                        size_t livepages) = 0;
   // handler is called when a datablock has been written to
-  virtual void DataBlockWrittenHandler(size_t datablock_idx) {
+  virtual void DataBlockWrittenHandler(size_t datablock_idx,
+                                       bool is_newly_live) {
     (void)datablock_idx;
+    (void)is_newly_live;
   }
 };
 
@@ -29,7 +33,7 @@ class RoundRobinPolicy : public GCPolicy {
     return datablock_idx;
   }
 
-  void LogBlockAllocatedHandler(size_t datablock_idx) {
+  void LogBlockAllocatedHandler(size_t datablock_idx, size_t) {
     blocks_queue.push_back(datablock_idx);
   }
 
@@ -48,12 +52,12 @@ class LRUPolicy : public GCPolicy {
     return datablock_idx;
   }
 
-  void LogBlockAllocatedHandler(size_t datablock_idx) {
+  void LogBlockAllocatedHandler(size_t datablock_idx, size_t) {
     block_node_map.insert(std::make_pair(
         datablock_idx, blocks_lru.insert(blocks_lru.end(), datablock_idx)));
   }
 
-  void DataBlockWrittenHandler(size_t datablock_idx) {
+  void DataBlockWrittenHandler(size_t datablock_idx, bool) {
     if (block_node_map.count(datablock_idx) == 0) {
       return;
     }
@@ -67,6 +71,40 @@ class LRUPolicy : public GCPolicy {
   std::unordered_map<size_t, std::list<size_t>::iterator> block_node_map;
 };
 
+class GreedyPolicy : public GCPolicy {
+ public:
+  GreedyPolicy() : block_livepages_map() {}
+
+  size_t SelectBlockToClean() {
+    size_t block_min_livepages = std::numeric_limits<size_t>::max();
+    size_t min_livepages = std::numeric_limits<size_t>::max();
+    for (const auto &it : block_livepages_map) {
+      if (it.second < min_livepages) {
+        block_min_livepages = it.first;
+        min_livepages = it.second;
+      }
+    }
+    block_livepages_map.erase(block_min_livepages);
+    return block_min_livepages;
+  }
+
+  void LogBlockAllocatedHandler(size_t datablock_idx, size_t livepages) {
+    block_livepages_map[datablock_idx] = livepages;
+  }
+
+  void DataBlockWrittenHandler(size_t datablock_idx, bool is_newly_live) {
+    if (block_livepages_map.count(datablock_idx) == 0) {
+      return;
+    }
+    if (is_newly_live) {
+      ++block_livepages_map[datablock_idx];
+    }
+  }
+
+ private:
+  std::unordered_map<size_t, size_t> block_livepages_map;
+};
+
 std::unique_ptr<GCPolicy> SelectGCPolicy(size_t policy_idx) {
   switch (policy_idx) {
     case 0:
@@ -74,6 +112,7 @@ std::unique_ptr<GCPolicy> SelectGCPolicy(size_t policy_idx) {
     case 1:
       return std::unique_ptr<LRUPolicy>(new LRUPolicy());
     case 2:
+      return std::unique_ptr<GreedyPolicy>(new GreedyPolicy());
     case 3:
     default:
       throw std::runtime_error{"invalid GC policy_idx"};
@@ -192,7 +231,7 @@ class MyFTL : public FTLBase<PageType> {
     if (!pages_valid[datapage_idx]) {
       // page is empty
       pages_valid[datapage_idx] = true;
-      gc_policy->DataBlockWrittenHandler(datablock_idx);
+      gc_policy->DataBlockWrittenHandler(datablock_idx, true);
       return std::make_pair(ExecState::SUCCESS, datapage_addr);
     }
 
@@ -208,7 +247,8 @@ class MyFTL : public FTLBase<PageType> {
       // allocate logblock
       data_logblock_map[datablock_idx] = free_log_blocks.front();
       free_log_blocks.pop_front();
-      gc_policy->LogBlockAllocatedHandler(datablock_idx);
+      gc_policy->LogBlockAllocatedHandler(datablock_idx,
+                                          ComputeLivePages(datablock_idx));
     }
     size_t logblock_idx = data_logblock_map[datablock_idx];
 
@@ -221,7 +261,7 @@ class MyFTL : public FTLBase<PageType> {
     }
 
     logblock_lbas_map[logblock_idx].push_back(lba);
-    gc_policy->DataBlockWrittenHandler(datablock_idx);
+    gc_policy->DataBlockWrittenHandler(datablock_idx, false);
     return std::make_pair(
         ExecState::SUCCESS,
         GetAddrFromBlockPageIdx(logblock_idx,
@@ -301,6 +341,21 @@ class MyFTL : public FTLBase<PageType> {
   void Erase(size_t block_idx, const ExecCallBack<PageType> &func) {
     func(OpCode::ERASE, GetAddrFromBlockIdx(block_idx));
     ++erase_counts[block_idx];
+  }
+
+  size_t ComputeLivePages(size_t datablock_idx) {
+    size_t livepages = 0;
+    Address addr = GetAddrFromBlockIdx(datablock_idx);
+
+    for (size_t i = 0; i < block_size; ++i) {
+      addr.page = i;
+      size_t datapage_idx = GetPageIdx(addr);
+      if (pages_valid[datapage_idx]) {
+        ++livepages;
+      }
+    }
+
+    return livepages;
   }
 
   bool IsValidLba(size_t lba) { return lba <= largest_lba; }

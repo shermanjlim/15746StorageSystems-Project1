@@ -1,9 +1,49 @@
 #include "myFTL.h"
 
 #include <list>
+#include <memory>
 #include <unordered_map>
 
 #include "common.h"
+
+// Abstract class for a garbage collector policy
+class GCPolicy {
+ public:
+  // returns the corresponding datablock_idx of the logblock to clean
+  virtual size_t SelectBlockToClean() = 0;
+  // handler is called when a logblock has been allocated to a datablock
+  virtual void LogBlockAllocatedHandler(size_t datablock_idx) = 0;
+};
+
+class RoundRobinPolicy : public GCPolicy {
+ public:
+  RoundRobinPolicy() : blocks_queue() {}
+
+  size_t SelectBlockToClean() {
+    size_t datablock_idx = blocks_queue.front();
+    blocks_queue.pop_front();
+    return datablock_idx;
+  }
+
+  void LogBlockAllocatedHandler(size_t datablock_idx) {
+    blocks_queue.push_back(datablock_idx);
+  }
+
+ private:
+  std::list<size_t> blocks_queue;
+};
+
+std::unique_ptr<GCPolicy> SelectGCPolicy(size_t policy_idx) {
+  switch (policy_idx) {
+    case 0:
+      return std::unique_ptr<RoundRobinPolicy>(new RoundRobinPolicy());
+    case 1:
+    case 2:
+    case 3:
+    default:
+      throw std::runtime_error{"invalid GC policy_idx"};
+  }
+}
 
 template <typename PageType>
 class MyFTL : public FTLBase<PageType> {
@@ -22,7 +62,8 @@ class MyFTL : public FTLBase<PageType> {
         data_logblock_map(),
         pages_valid(),
         erase_counts(),
-        logblock_lbas_map() {
+        logblock_lbas_map(),
+        gc_policy(SelectGCPolicy(conf->GetGCPolicy())) {
     /* Overprovioned blocks as a percentage of total number of blocks */
     size_t op = conf->GetOverprovisioning();
 
@@ -105,8 +146,6 @@ class MyFTL : public FTLBase<PageType> {
    */
   std::pair<ExecState, Address> WriteTranslate(
       size_t lba, const ExecCallBack<PageType> &func) {
-    (void)func;
-
     if (!IsValidLba(lba)) {
       return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
     }
@@ -124,7 +163,7 @@ class MyFTL : public FTLBase<PageType> {
     size_t datablock_idx = GetBlockIdx(datapage_addr);
     if (data_logblock_map.count(datablock_idx) == 0) {
       if (free_log_blocks.empty()) {
-        if (Clean(SelectBlockToClean(), func)) {
+        if (Clean(gc_policy->SelectBlockToClean(), func)) {
           return WriteTranslate(lba, func);
         } else {
           return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
@@ -133,7 +172,7 @@ class MyFTL : public FTLBase<PageType> {
       // allocate logblock
       data_logblock_map[datablock_idx] = free_log_blocks.front();
       free_log_blocks.pop_front();
-      mapped_datablocks.push_back(datablock_idx);
+      gc_policy->LogBlockAllocatedHandler(datablock_idx);
     }
     size_t logblock_idx = data_logblock_map[datablock_idx];
 
@@ -227,12 +266,6 @@ class MyFTL : public FTLBase<PageType> {
     ++erase_counts[block_idx];
   }
 
-  size_t SelectBlockToClean() {
-    size_t datablock_idx = mapped_datablocks.front();
-    mapped_datablocks.pop_front();
-    return datablock_idx;
-  }
-
   bool IsValidLba(size_t lba) { return lba <= largest_lba; }
 
   Address CalcPhyAddr(size_t lba) {
@@ -294,7 +327,7 @@ class MyFTL : public FTLBase<PageType> {
   std::unordered_map<size_t, std::vector<size_t>> logblock_lbas_map;
   size_t cleanblock_idx;
 
-  std::list<size_t> mapped_datablocks;
+  std::unique_ptr<GCPolicy> gc_policy;
 };
 
 /*

@@ -17,12 +17,12 @@ class MyFTL : public FTLBase<PageType> {
         die_size(conf->GetDieSize()),
         plane_size(conf->GetPlaneSize()),
         block_size(conf->GetBlockSize()),
+        block_erase_count(conf->GetBlockEraseCount()),
         free_log_blocks(),
         data_logblock_map(),
         pages_valid(),
+        erase_counts(),
         logblock_lbas_map() {
-    /* Maximum number a block_ can be erased */
-    size_t block_erase_count = conf->GetBlockEraseCount();
     /* Overprovioned blocks as a percentage of total number of blocks */
     size_t op = conf->GetOverprovisioning();
 
@@ -48,6 +48,8 @@ class MyFTL : public FTLBase<PageType> {
 
     size_t num_pages = num_blocks * block_size;
     pages_valid.resize(num_pages, false);
+
+    erase_counts.resize(num_blocks, 0);
   }
 
   /*
@@ -163,6 +165,12 @@ class MyFTL : public FTLBase<PageType> {
   bool Clean(size_t datablock_idx, const ExecCallBack<PageType> &func) {
     size_t logblock_idx = data_logblock_map[datablock_idx];
 
+    if (erase_counts[datablock_idx] >= block_erase_count ||
+        erase_counts[logblock_idx] >= block_erase_count ||
+        erase_counts[cleanblock_idx] >= block_erase_count) {
+      return false;
+    }
+
     std::vector<bool> live_copied(block_size, false);
 
     // start copying live pages from log block
@@ -195,8 +203,8 @@ class MyFTL : public FTLBase<PageType> {
     }
 
     // erase data and log block and reset data structures
-    func(OpCode::ERASE, GetAddrFromBlockIdx(datablock_idx));
-    func(OpCode::ERASE, GetAddrFromBlockIdx(logblock_idx));
+    Erase(datablock_idx, func);
+    Erase(logblock_idx, func);
     free_log_blocks.push_back(logblock_idx);
     data_logblock_map.erase(datablock_idx);
     logblock_lbas.clear();
@@ -209,9 +217,14 @@ class MyFTL : public FTLBase<PageType> {
       func(OpCode::READ, GetAddrFromBlockPageIdx(cleanblock_idx, i));
       func(OpCode::WRITE, GetAddrFromBlockPageIdx(datablock_idx, i));
     }
-    func(OpCode::ERASE, GetAddrFromBlockIdx(cleanblock_idx));
+    Erase(cleanblock_idx, func);
 
     return true;
+  }
+
+  void Erase(size_t block_idx, const ExecCallBack<PageType> &func) {
+    func(OpCode::ERASE, GetAddrFromBlockIdx(block_idx));
+    ++erase_counts[block_idx];
   }
 
   size_t SelectBlockToClean() {
@@ -263,6 +276,8 @@ class MyFTL : public FTLBase<PageType> {
   size_t plane_size;
   /* Number of pages in a block_ */
   size_t block_size;
+  /* Maximum number a block_ can be erased */
+  size_t block_erase_count;
 
   // gives the largest valid lba
   size_t largest_lba;
@@ -273,6 +288,8 @@ class MyFTL : public FTLBase<PageType> {
   std::unordered_map<size_t, size_t> data_logblock_map;
   // bitset of whether pages are valid
   std::vector<bool> pages_valid;
+  // the erase_count of each block
+  std::vector<size_t> erase_counts;
   // mapping of log reservation blocks to LBAs written
   std::unordered_map<size_t, std::vector<size_t>> logblock_lbas_map;
   size_t cleanblock_idx;

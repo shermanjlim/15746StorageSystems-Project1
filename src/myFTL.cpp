@@ -368,7 +368,7 @@ class MyFTL : public FTLBase<PageType> {
       if (live_copied[i]) {
         continue;
       }
-      if (!pages_valid[i]) {
+      if (!pages_valid[GetPageIdx(GetAddrFromBlockPageIdx(datablock_idx, i))]) {
         continue;
       }
       // this is a live page, copy it over to the cleaning block

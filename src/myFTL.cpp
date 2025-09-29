@@ -152,6 +152,14 @@ class MyFTL : public FTLBase<PageType> {
       return ExecState::FAILURE;
     }
 
+    pg_size_t page_idx = lba_page_map_[lba];
+    if (page_idx == INVALID_PAGE) {
+      return ExecState::SUCCESS;
+    }
+
+    page_lba_map_[page_idx] = INVALID_PAGE;
+    lba_page_map_[lba] = INVALID_PAGE;
+
     return ExecState::SUCCESS;
   }
 

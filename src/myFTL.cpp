@@ -114,7 +114,29 @@ class MyFTL : public FTLBase<PageType> {
       return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
     }
 
-    return std::make_pair(ExecState::SUCCESS, Address(0, 0, 0, 0, 0));
+    if (log_page_offset_ >= block_size_) {
+      // current log block is full
+      if (free_log_blocks_.empty()) {
+        return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
+      }
+
+      used_log_blocks_.push_back(log_block_);
+      log_block_ = free_log_blocks_.front();
+      free_log_blocks_.pop_front();
+      log_page_offset_ = 0;
+    }
+
+    // invalidate the previous page of this lba
+    pg_size_t prev_page_idx = lba_page_map_[lba];
+    if (prev_page_idx != INVALID_PAGE) {
+      page_lba_map_[prev_page_idx] = INVALID_PAGE;
+    }
+    // write to next free page in current log block
+    pg_size_t page_idx = log_block_ * block_size_ + log_page_offset_++;
+    page_lba_map_[page_idx] = lba;
+    lba_page_map_[lba] = page_idx;
+
+    return std::make_pair(ExecState::SUCCESS, GetAddrFromPageIdx(page_idx));
   }
 
   /*
@@ -133,6 +155,23 @@ class MyFTL : public FTLBase<PageType> {
  private:
   bool IsValidLba(size_t lba) { return lba <= largest_lba_; }
 
+  // We mostly use indexes to represent the 5-tuple addresses to save space.
+  // These functions convert 5-tuple addresses to indexes and vice versa.
+  pg_size_t GetPageIdxFromAddr(const Address &addr) {
+    return addr.package * package_size_ * die_size_ * plane_size_ *
+               block_size_ +
+           addr.die * die_size_ * plane_size_ * block_size_ +
+           addr.plane * plane_size_ * block_size_ + addr.block * block_size_ +
+           addr.page;
+  }
+  Address GetAddrFromPageIdx(pg_size_t page_idx) {
+    return Address(
+        page_idx / (package_size_ * die_size_ * plane_size_ * block_size_),
+        (page_idx / (die_size_ * plane_size_ * block_size_)) % package_size_,
+        (page_idx / (plane_size_ * block_size_)) % die_size_,
+        (page_idx / (block_size_)) % plane_size_, page_idx % block_size_);
+  }
+
   // Number of packages in a ssd
   size_t ssd_size_;
   // Number of dies in a package_
@@ -149,9 +188,9 @@ class MyFTL : public FTLBase<PageType> {
   // gives the largest valid lba
   size_t largest_lba_;
 
-  // mapping of lba index to physical page index
+  // mapping of lba to physical page index
   std::vector<pg_size_t> lba_page_map_;
-  // mapping of physical page index to lba index
+  // mapping of physical page index to lba
   std::vector<pg_size_t> page_lba_map_;
   // mapping of block index to erase count
   std::vector<erase_size_t> block_erase_map_;

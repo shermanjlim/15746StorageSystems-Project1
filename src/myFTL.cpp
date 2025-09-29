@@ -198,7 +198,52 @@ class MyFTL : public FTLBase<PageType> {
     free_log_blocks_.push_back(blk);
   }
 
-  blk_size_t SelectBlockToClean() { return used_log_blocks_.front(); }
+  blk_size_t SelectBlockToClean() {
+    // select block with min score to GC
+    blk_size_t blk_min_score = std::numeric_limits<blk_size_t>::max();
+    size_t min_score = std::numeric_limits<size_t>::max();
+    for (const auto &blk : used_log_blocks_) {
+      size_t score = CalcBlockScore(blk);
+      if (score < min_score) {
+        blk_min_score = blk;
+        min_score = score;
+      }
+    }
+    return blk_min_score;
+  }
+
+  // We assign each block some score that'll determine whether it should be the
+  // GC candidate. Lower score == more likely to be GC candidate.
+  size_t CalcBlockScore(blk_size_t blk) {
+    size_t score = 0;
+
+    // increment score for each live page the block has
+    // this makes blocks with more live pages less desirable and controls the
+    // write amplification
+    for (pg_size_t page = blk * block_size_; page < ((blk + 1) * block_size_);
+         ++page) {
+      if (page_lba_map_[page] != INVALID_PAGE) {
+        ++score;
+      }
+    }
+
+    // increment score as a block gets closer to dying to ensure write leveling
+    size_t erases_left = block_erase_count_ - block_erase_map_[blk];
+    if (erases_left < (block_erase_count_ / 2)) {
+      score += block_size_;
+    }
+    if (erases_left < (block_erase_count_ / 4)) {
+      score += block_size_;
+    }
+    if (erases_left == 1) {
+      score += (block_size_ * 10);  // last breath
+    }
+    if (erases_left == 0) {
+      score += (block_size_ * 10);  // dead
+    }
+
+    return score;
+  }
 
   // helper function to write an LBA to the current log, and returns page index
   // of the page written to

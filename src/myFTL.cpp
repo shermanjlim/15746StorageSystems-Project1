@@ -1,6 +1,7 @@
 #include "myFTL.h"
 
 #include <limits>
+#include <list>
 
 #include "common.h"
 
@@ -56,7 +57,7 @@ class MyFTL : public FTLBase<PageType> {
     size_t num_blocks = ssd_size_ * package_size_ * die_size_ * plane_size_;
     size_t num_op_blocks =
         (num_blocks * op + 100 / 2) / 100;  // rounds to nearest integer
-    size_t num_pages = num_blocks * block_size;
+    size_t num_pages = num_blocks * block_size_;
 
     // initialize data structures and variables based on config
     largest_lba_ = (num_blocks - num_op_blocks) * block_size_ - 1;

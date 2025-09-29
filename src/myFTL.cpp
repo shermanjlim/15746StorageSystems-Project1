@@ -98,7 +98,12 @@ class MyFTL : public FTLBase<PageType> {
       return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
     }
 
-    return std::make_pair(ExecState::SUCCESS, Address(0, 0, 0, 0, 0));
+    pg_size_t page_idx = lba_page_map_[lba];
+    if (page_idx == INVALID_PAGE) {
+      return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
+    }
+
+    return std::make_pair(ExecState::SUCCESS, GetAddrFromPageIdx(page_idx));
   }
 
   /*

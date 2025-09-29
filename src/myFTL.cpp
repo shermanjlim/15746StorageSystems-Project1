@@ -125,22 +125,20 @@ class MyFTL : public FTLBase<PageType> {
         return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
       }
 
+      // allocate new log block
       used_log_blocks_.push_back(log_block_);
       log_block_ = free_log_blocks_.front();
       free_log_blocks_.pop_front();
       log_page_offset_ = 0;
+
+      // do some cleaning if we are running out of free blocks
+      if (free_log_blocks_.size() < GC_THRESHOLD) {
+        Clean(func);
+      }
+      return WriteTranslate(lba, func);
     }
 
-    // invalidate the previous page of this lba
-    pg_size_t prev_page_idx = lba_page_map_[lba];
-    if (prev_page_idx != INVALID_PAGE) {
-      page_lba_map_[prev_page_idx] = INVALID_PAGE;
-    }
-    // write to next free page in current log block
-    pg_size_t page_idx = log_block_ * block_size_ + log_page_offset_++;
-    page_lba_map_[page_idx] = lba;
-    lba_page_map_[lba] = page_idx;
-
+    pg_size_t page_idx = LogLba(lba);
     return std::make_pair(ExecState::SUCCESS, GetAddrFromPageIdx(page_idx));
   }
 
@@ -158,6 +156,57 @@ class MyFTL : public FTLBase<PageType> {
   }
 
  private:
+  // if the number of free log blocks fall below this level, we'll do
+  // some GC
+  static constexpr size_t GC_THRESHOLD = 1;
+
+  void Clean(const ExecCallBack<PageType> &func) {
+    blk_size_t blk = SelectBlockToClean();
+
+    if (block_erase_map_[blk] >= block_erase_count_) {
+      // erase limit reached
+      return;
+    }
+
+    // migrate live pages
+    // invariant: there's enough slots in log page to hold all the live pages
+    for (pg_size_t page = blk * block_size_; page < ((blk + 1) * block_size_);
+         ++page) {
+      pg_size_t lba = page_lba_map_[page];
+      if (lba == INVALID_PAGE) {
+        continue;
+      }
+
+      // this is a live page
+      func(OpCode::READ, GetAddrFromPageIdx(page));
+      pg_size_t new_page = LogLba(lba);
+      func(OpCode::WRITE, GetAddrFromPageIdx(new_page));
+    }
+
+    func(OpCode::ERASE, GetAddrFromBlockIdx(blk));
+    ++block_erase_map_[blk];
+
+    used_log_blocks_.remove(blk);
+    free_log_blocks_.push_back(blk);
+  }
+
+  blk_size_t SelectBlockToClean() { return used_log_blocks_.front(); }
+
+  // helper function to write an LBA to the current log, and returns page index
+  // of the page written to
+  pg_size_t LogLba(pg_size_t lba) {
+    // invalidate the previous page of this lba
+    pg_size_t prev_page_idx = lba_page_map_[lba];
+    if (prev_page_idx != INVALID_PAGE) {
+      page_lba_map_[prev_page_idx] = INVALID_PAGE;
+    }
+    // write to next free page in current log block
+    pg_size_t page_idx = log_block_ * block_size_ + log_page_offset_++;
+    page_lba_map_[page_idx] = lba;
+    lba_page_map_[lba] = page_idx;
+    return page_idx;
+  }
+
   bool IsValidLba(size_t lba) { return lba <= largest_lba_; }
 
   // We mostly use indexes to represent the 5-tuple addresses to save space.
@@ -175,6 +224,12 @@ class MyFTL : public FTLBase<PageType> {
         (page_idx / (die_size_ * plane_size_ * block_size_)) % package_size_,
         (page_idx / (plane_size_ * block_size_)) % die_size_,
         (page_idx / (block_size_)) % plane_size_, page_idx % block_size_);
+  }
+  Address GetAddrFromBlockIdx(blk_size_t blk_idx) {
+    return Address(blk_idx / (package_size_ * die_size_ * plane_size_),
+                   (blk_idx / (die_size_ * plane_size_)) % package_size_,
+                   (blk_idx / plane_size_) % die_size_, blk_idx % plane_size_,
+                   0);
   }
 
   // Number of packages in a ssd

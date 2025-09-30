@@ -20,6 +20,7 @@ following data types to optimize for memory usage.
 using pg_size_t = uint16_t;
 using blk_size_t = uint16_t;
 using erase_size_t = uint8_t;
+using pgcnt_size_t = uint8_t;
 
 constexpr pg_size_t INVALID_PAGE = std::numeric_limits<pg_size_t>::max();
 
@@ -69,6 +70,8 @@ class MyFTL : public FTLBase<PageType> {
       free_log_blocks_.push_back(i);
     }
     used_log_blocks_.clear();
+
+    block_livepages_map_.assign(num_blocks, 0);
 
     log_block_ = free_log_blocks_.front();
     free_log_blocks_.pop_front();
@@ -157,7 +160,7 @@ class MyFTL : public FTLBase<PageType> {
       return ExecState::SUCCESS;
     }
 
-    page_lba_map_[page_idx] = INVALID_PAGE;
+    UpdatePageLba(page_idx, INVALID_PAGE);
     lba_page_map_[lba] = INVALID_PAGE;
 
     return ExecState::SUCCESS;
@@ -215,17 +218,10 @@ class MyFTL : public FTLBase<PageType> {
   // We assign each block some score that'll determine whether it should be the
   // GC candidate. Lower score == more likely to be GC candidate.
   size_t CalcBlockScore(blk_size_t blk) {
-    size_t score = 0;
-
     // increment score for each live page the block has
     // this makes blocks with more live pages less desirable and controls the
     // write amplification
-    for (pg_size_t page = blk * block_size_; page < ((blk + 1) * block_size_);
-         ++page) {
-      if (page_lba_map_[page] != INVALID_PAGE) {
-        ++score;
-      }
-    }
+    size_t score = block_livepages_map_[blk];
 
     // increment score as a block gets closer to dying to ensure write leveling
     size_t erases_left = block_erase_count_ - block_erase_map_[blk];
@@ -251,13 +247,22 @@ class MyFTL : public FTLBase<PageType> {
     // invalidate the previous page of this lba
     pg_size_t prev_page_idx = lba_page_map_[lba];
     if (prev_page_idx != INVALID_PAGE) {
-      page_lba_map_[prev_page_idx] = INVALID_PAGE;
+      UpdatePageLba(prev_page_idx, INVALID_PAGE);
     }
     // write to next free page in current log block
     pg_size_t page_idx = log_block_ * block_size_ + log_page_offset_++;
-    page_lba_map_[page_idx] = lba;
+    UpdatePageLba(page_idx, lba);
     lba_page_map_[lba] = page_idx;
     return page_idx;
+  }
+
+  void UpdatePageLba(pg_size_t page_idx, pg_size_t lba) {
+    if (lba == INVALID_PAGE) {
+      --block_livepages_map_[page_idx / block_size_];
+    } else {
+      ++block_livepages_map_[page_idx / block_size_];
+    }
+    page_lba_map_[page_idx] = lba;
   }
 
   bool IsValidLba(size_t lba) { return lba <= largest_lba_; }
@@ -312,8 +317,11 @@ class MyFTL : public FTLBase<PageType> {
   // list of used log blocks (fully programmed)
   std::list<blk_size_t> used_log_blocks_;
 
-  // index of the current log block we are using and the offset of the next free
-  // page
+  // track live pages per block
+  std::vector<pgcnt_size_t> block_livepages_map_;
+
+  // index of the current log block we are using and the offset of the next
+  // free page
   blk_size_t log_block_;
   pg_size_t log_page_offset_;
 };

@@ -138,7 +138,9 @@ class MyFTL : public FTLBase<PageType> {
       if (free_log_blocks_.size() < GC_THRESHOLD) {
         Clean(func);
       }
-      return WriteTranslate(lba, func);
+      if (log_page_offset_ >= block_size_) {
+        return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
+      }
     }
 
     pg_size_t page_idx = LogLba(lba);

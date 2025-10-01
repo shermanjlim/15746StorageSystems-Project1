@@ -138,9 +138,7 @@ class MyFTL : public FTLBase<PageType> {
       if (free_log_blocks_.size() < GC_THRESHOLD) {
         Clean(func);
       }
-      if (log_page_offset_ >= block_size_) {
-        return std::make_pair(ExecState::FAILURE, Address(0, 0, 0, 0, 0));
-      }
+      return WriteTranslate(lba, func);
     }
 
     pg_size_t page_idx = LogLba(lba);
@@ -223,24 +221,7 @@ class MyFTL : public FTLBase<PageType> {
     // increment score for each live page the block has
     // this makes blocks with more live pages less desirable and controls the
     // write amplification
-    size_t score = block_livepages_map_[blk];
-
-    // increment score as a block gets closer to dying to ensure write leveling
-    size_t erases_left = block_erase_count_ - block_erase_map_[blk];
-    if (erases_left < (block_erase_count_ / 2)) {
-      score += block_size_;
-    }
-    if (erases_left < (block_erase_count_ / 4)) {
-      score += block_size_;
-    }
-    if (erases_left == 1) {
-      score += (block_size_ * 10);  // last breath
-    }
-    if (erases_left == 0) {
-      score += (block_size_ * 10);  // dead
-    }
-
-    return score;
+    return block_livepages_map_[blk];
   }
 
   // helper function to write an LBA to the current log, and returns page index

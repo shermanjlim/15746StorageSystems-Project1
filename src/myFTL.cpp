@@ -221,7 +221,18 @@ class MyFTL : public FTLBase<PageType> {
     // increment score for each live page the block has
     // this makes blocks with more live pages less desirable and controls the
     // write amplification
-    return block_livepages_map_[blk];
+    size_t score = block_livepages_map_[blk];
+
+    // increment score as a block gets closer to dying to ensure write leveling
+    size_t erases_left = block_erase_count_ - block_erase_map_[blk];
+    if (erases_left < (block_erase_count_ / 2)) {
+      score += (block_size_ / 4);
+    }
+    if (erases_left < (block_erase_count_ / 4)) {
+      score += (block_size_ / 4);
+    }
+
+    return score;
   }
 
   // helper function to write an LBA to the current log, and returns page index
